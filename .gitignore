@@ -1,0 +1,22 @@
+# Бинарники
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+bin/
+vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env файлы (секреты не пушим!)
+.env
+*.env
