@@ -7,6 +7,7 @@ type Config struct {
 	DatabaseURL  string
 	RedisURL     string
 	KafkaBrokers []string
+	JWTSecret    string
 }
 
 func Load() *Config {
@@ -17,6 +18,7 @@ func Load() *Config {
 		KafkaBrokers: []string{
 			getEnv("KAFKA_BROKERS", "localhost:9092"),
 		},
+		JWTSecret: getEnv("JWT_SECRET", "local-dev-secret-change-in-production"),
 	}
 }
 
