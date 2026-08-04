@@ -4,24 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrWalletNotFound    = errors.New("wallet not found")
+	// ErrWalletNotFound возвращается, когда кошелёк с указанным user_id отсутствует в БД.
+	ErrWalletNotFound = errors.New("wallet not found")
+	// ErrInsufficientFunds возвращается при попытке списать больше, чем есть на балансе.
 	ErrInsufficientFunds = errors.New("insufficient funds")
-	ErrDuplicateKey      = errors.New("duplicate key")
+	// ErrDuplicateKey возвращается при конфликте уникального ограничения
+	// (например, при гонке на optimistic locking по полю version).
+	ErrDuplicateKey = errors.New("duplicate key")
+	// ErrInvalidAmount возвращается, когда сумма операции не положительна.
+	ErrInvalidAmount = errors.New("amount must be positive")
 )
 
+// Wallet — кошелёк игрока с текущим балансом и версией для optimistic locking.
 type Wallet struct {
-	ID      int64
-	UserID  int64
-	Balance int64
-	Version int64
+	ID        int64
+	UserID    int64
+	Balance   int64
+	Version   int64
+	UpdatedAt time.Time
 }
 
+// Transaction — неизменяемая запись об одной операции с кошельком
+// (пополнение, списание и т.д.), используется как история и для идемпотентности.
 type Transaction struct {
 	ID             int64
 	UserID         int64
@@ -34,20 +45,25 @@ type Transaction struct {
 	IdempotencyKey string
 }
 
+// WalletRepository инкапсулирует доступ к хранилищу кошельков и транзакций.
 type WalletRepository interface {
-	// Создать кошелёк
+	// Create создаёт новый кошелёк с нулевым балансом для указанного userID.
 	Create(ctx context.Context, userID int64) (*Wallet, error)
-	// Получить кошелёк по userID
+	// GetByUserID возвращает кошелёк по userID без блокировки.
+	// Возвращает ErrWalletNotFound, если кошелёк не найден.
 	GetByUserID(ctx context.Context, userID int64) (*Wallet, error)
-	// Получить кошелёк с блокировкой FOR UPDATE
+	// GetByUserIDForUpdate возвращает кошелёк с блокировкой строки (SELECT ... FOR UPDATE)
+	// в рамках переданной транзакции tx. Должна использоваться перед изменением баланса.
 	GetByUserIDForUpdate(ctx context.Context, tx pgx.Tx, userID int64) (*Wallet, error)
-	// Обновить баланс
+	// UpdateBalance атомарно обновляет баланс кошелька с проверкой версии (optimistic locking).
+	// Возвращает ErrDuplicateKey, если версия успела измениться (конфликт конкурентных обновлений).
 	UpdateBalance(ctx context.Context, tx pgx.Tx, wallet *Wallet, newBalance int64) error
-	// Создать транзакцию
+	// CreateTransaction сохраняет запись о выполненной операции в неизменяемый лог транзакций.
 	CreateTransaction(ctx context.Context, tx pgx.Tx, t *Transaction) error
-	// Проверить idempotency key
+	// GetTransactionByIdempotencyKey ищет ранее выполненную транзакцию по idempotency-ключу.
+	// Возвращает (nil, nil), если транзакция с таким ключом ещё не выполнялась.
 	GetTransactionByIdempotencyKey(ctx context.Context, key string) (*Transaction, error)
-	// Начать транзакцию БД
+	// BeginTx открывает новую транзакцию БД.
 	BeginTx(ctx context.Context) (pgx.Tx, error)
 }
 
@@ -55,10 +71,12 @@ type walletRepository struct {
 	db *pgxpool.Pool
 }
 
+// NewWalletRepository создаёт WalletRepository поверх пула соединений pgx.
 func NewWalletRepository(db *pgxpool.Pool) WalletRepository {
 	return &walletRepository{db: db}
 }
 
+// Create создаёт новый кошелёк с нулевым балансом для указанного userID.
 func (r *walletRepository) Create(ctx context.Context, userID int64) (*Wallet, error) {
 	wallet := &Wallet{}
 
@@ -79,11 +97,13 @@ func (r *walletRepository) Create(ctx context.Context, userID int64) (*Wallet, e
 	return wallet, nil
 }
 
+// GetByUserID возвращает кошелёк по userID без блокировки.
+// Возвращает ErrWalletNotFound, если кошелёк не найден.
 func (r *walletRepository) GetByUserID(ctx context.Context, userID int64) (*Wallet, error) {
 	wallet := &Wallet{}
 
 	err := r.db.QueryRow(ctx, `
-	SELECT id, user_id, balance, version
+	SELECT id, user_id, balance, version, updated_at
 	FROM wallets
 	WHERE user_id = $1
 	`, userID).Scan(
@@ -91,6 +111,7 @@ func (r *walletRepository) GetByUserID(ctx context.Context, userID int64) (*Wall
 		&wallet.UserID,
 		&wallet.Balance,
 		&wallet.Version,
+		&wallet.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -103,6 +124,8 @@ func (r *walletRepository) GetByUserID(ctx context.Context, userID int64) (*Wall
 	return wallet, nil
 }
 
+// GetByUserIDForUpdate возвращает кошелёк с блокировкой строки (SELECT ... FOR UPDATE)
+// в рамках переданной транзакции tx. Должна использоваться перед изменением баланса.
 func (r *walletRepository) GetByUserIDForUpdate(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -111,15 +134,16 @@ func (r *walletRepository) GetByUserIDForUpdate(
 	wallet := &Wallet{}
 
 	err := tx.QueryRow(ctx, `
-	SELECT id, user_id, balance, version
+	SELECT id, user_id, balance, version, updated_at
 	FROM wallets
-	WHERE user_id =$1
+	WHERE user_id = $1
 	FOR UPDATE
 	`, userID).Scan(
 		&wallet.ID,
 		&wallet.UserID,
 		&wallet.Balance,
 		&wallet.Version,
+		&wallet.UpdatedAt,
 	)
 
 	if err != nil {
@@ -133,6 +157,8 @@ func (r *walletRepository) GetByUserIDForUpdate(
 	return wallet, nil
 }
 
+// UpdateBalance атомарно обновляет баланс кошелька с проверкой версии (optimistic locking).
+// Возвращает ErrDuplicateKey, если версия успела измениться (конфликт конкурентных обновлений).
 func (r *walletRepository) UpdateBalance(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -143,7 +169,7 @@ func (r *walletRepository) UpdateBalance(
 	UPDATE wallets
 	SET balance = $1,
 	version = version + 1,
-	update_at = NOW()
+	updated_at = NOW()
 	WHERE user_id = $2
 	AND version = $3
 	`, newBalance, wallet.UserID, wallet.Version)
@@ -153,12 +179,13 @@ func (r *walletRepository) UpdateBalance(
 	}
 
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("version conflit: %w", ErrDuplicateKey)
+		return fmt.Errorf("version conflict: %w", ErrDuplicateKey)
 	}
 
 	return nil
 }
 
+// CreateTransaction сохраняет запись о выполненной операции в неизменяемый лог транзакций.
 func (r *walletRepository) CreateTransaction(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -195,6 +222,8 @@ func (r *walletRepository) CreateTransaction(
 	return nil
 }
 
+// GetTransactionByIdempotencyKey ищет ранее выполненную транзакцию по idempotency-ключу.
+// Возвращает (nil, nil), если транзакция с таким ключом ещё не выполнялась.
 func (r *walletRepository) GetTransactionByIdempotencyKey(
 	ctx context.Context,
 	key string,
@@ -205,7 +234,7 @@ func (r *walletRepository) GetTransactionByIdempotencyKey(
 	SELECT id, user_id, type, amount,
 	balance_before, balance_after,
 	idempotency_key
-	ROM transactions
+	FROM transactions
 	WHERE idempotency_key = $1
 	`, key).Scan(
 		&t.ID,
@@ -228,6 +257,7 @@ func (r *walletRepository) GetTransactionByIdempotencyKey(
 	return t, nil
 }
 
+// BeginTx открывает новую транзакцию БД.
 func (r *walletRepository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {

@@ -11,26 +11,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// Типы транзакций, сохраняемые в repository.Transaction.Type.
 const (
 	TransactionTypeDeposit = "DEPOSIT"
 	TransactionTypeDebit   = "DEBIT"
-	TransactionTypeCedit   = "CREDIT"
+	TransactionTypeCredit  = "CREDIT"
 )
 
 type (
-	// Создать кошелёк
+	// CreateWalletRequest — запрос на создание кошелька для игрока.
 	CreateWalletRequest struct {
 		UserID int64 `json:"user_id"`
 	}
 
-	// Пополнить баланс
+	// DepositRequest — запрос на пополнение баланса игрока.
 	DepositRequest struct {
 		UserID         int64  `json:"user_id"`
 		Amount         int64  `json:"amount"`
 		IdempotencyKey string `json:"idempotency_key"`
 	}
 
-	// Списать деньги
+	// DebitRequest — запрос на списание средств с баланса игрока
+	// (например, при размещении ставки).
 	DebitRequest struct {
 		UserID         int64  `json:"user_id"`
 		Amount         int64  `json:"amount"`
@@ -39,14 +41,14 @@ type (
 		ReferenceType  string `json:"reference_type"` // BET
 	}
 
-	// Ответ с балансом
+	// BalanceResponse — текущий баланс кошелька игрока.
 	BalanceResponse struct {
 		UserID    int64     `json:"user_id"`
 		Balance   int64     `json:"balance"`
 		UpdatedAt time.Time `json:"updated_at"`
 	}
 
-	// Ответ с транзакцией
+	// TransactionResponse — результат выполненной операции с кошельком.
 	TransactionResponse struct {
 		ID            int64  `json:"id"`
 		UserID        int64  `json:"user_id"`
@@ -57,10 +59,20 @@ type (
 	}
 )
 
+// WalletService реализует бизнес-логику работы с кошельками игроков:
+// создание, получение баланса, пополнение и списание с гарантией идемпотентности.
 type WalletService interface {
+	// CreateWallet создаёт новый кошелёк для игрока.
 	CreateWallet(ctx context.Context, req CreateWalletRequest) error
+	// GetBalance возвращает текущий баланс кошелька игрока.
+	// Возвращает repository.ErrWalletNotFound, если кошелёк не найден.
 	GetBalance(ctx context.Context, userID int64) (*BalanceResponse, error)
+	// Deposit пополняет баланс игрока. Повторный вызов с тем же IdempotencyKey
+	// не приводит к повторному начислению — возвращается результат первого вызова.
 	Deposit(ctx context.Context, req DepositRequest) (*TransactionResponse, error)
+	// Debit списывает средства с баланса игрока. Повторный вызов с тем же IdempotencyKey
+	// не приводит к повторному списанию — возвращается результат первого вызова.
+	// Возвращает repository.ErrInsufficientFunds, если средств недостаточно.
 	Debit(ctx context.Context, req DebitRequest) (*TransactionResponse, error)
 }
 
@@ -69,6 +81,7 @@ type walletService struct {
 	logger *slog.Logger
 }
 
+// NewWalletService создаёт WalletService поверх переданного репозитория.
 func NewWalletService(
 	repo repository.WalletRepository,
 	logger *slog.Logger,
@@ -79,6 +92,7 @@ func NewWalletService(
 	}
 }
 
+// CreateWallet создаёт новый кошелёк для игрока.
 func (w *walletService) CreateWallet(
 	ctx context.Context,
 	req CreateWalletRequest,
@@ -99,6 +113,8 @@ func (w *walletService) CreateWallet(
 	return nil
 }
 
+// GetBalance возвращает текущий баланс кошелька игрока.
+// Возвращает repository.ErrWalletNotFound, если кошелёк не найден.
 func (w *walletService) GetBalance(
 	ctx context.Context,
 	userID int64,
@@ -115,13 +131,15 @@ func (w *walletService) GetBalance(
 	}
 
 	return &BalanceResponse{
-		UserID:  userID,
-		Balance: wallet.Balance,
+		UserID:    userID,
+		Balance:   wallet.Balance,
+		UpdatedAt: wallet.UpdatedAt,
 	}, nil
 }
 
-// Deposit — пополняем баланс игрока
-// Здесь уже сложнее — нужна транзакция БД и idempotency
+// Deposit пополняет баланс игрока в рамках БД-транзакции с блокировкой строки кошелька.
+// Повторный вызов с тем же IdempotencyKey не приводит к повторному начислению —
+// возвращается результат первого вызова.
 func (w *walletService) Deposit(
 	ctx context.Context,
 	req DepositRequest,
@@ -129,7 +147,7 @@ func (w *walletService) Deposit(
 	// Валидация входных данных
 	// Делаем ДО любых обращений к БД
 	if req.Amount <= 0 {
-		return nil, errors.New("the amount must be positive")
+		return nil, repository.ErrInvalidAmount
 	}
 
 	// Если клиент не передал idempotency key —
@@ -246,14 +264,17 @@ func (w *walletService) Deposit(
 	}, nil
 }
 
-// Debit — списываем деньги когда игрок делает ставку
-// Самая критичная операция — нельзя списать больше чем есть
+// Debit списывает средства с баланса игрока в рамках БД-транзакции с блокировкой
+// строки кошелька; блокировка берётся до проверки баланса, чтобы исключить гонку
+// между чтением баланса и его обновлением. Повторный вызов с тем же IdempotencyKey
+// не приводит к повторному списанию — возвращается результат первого вызова.
+// Возвращает repository.ErrInsufficientFunds, если средств недостаточно.
 func (w *walletService) Debit(
 	ctx context.Context,
 	req DebitRequest,
 ) (*TransactionResponse, error) {
 	if req.Amount <= 0 {
-		return nil, errors.New("the amount must be positive")
+		return nil, repository.ErrInvalidAmount
 	}
 
 	if req.IdempotencyKey == "" {
