@@ -1,6 +1,6 @@
-// Package middleware provides HTTP middleware for the wallet service,
-// including request ID propagation, structured request logging, and
-// panic recovery.
+// Package middleware содержит HTTP-мидлвари wallet-сервиса: проброс
+// request ID, структурированное логирование запросов и восстановление
+// после паник.
 package middleware
 
 import (
@@ -12,21 +12,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// contextKey is a private type used for context values set by this
-// package, preventing collisions with keys defined in other packages.
+// contextKey — приватный тип для значений контекста, задаваемых этим
+// пакетом, чтобы избежать коллизий с ключами из других пакетов.
 type contextKey string
 
 const (
-	// KeyRequestID is the context key under which the current request ID
-	// is stored by the RequestID middleware.
+	// KeyRequestID — ключ контекста, под которым мидлварь RequestID
+	// сохраняет текущий request ID.
 	KeyRequestID contextKey = "request_id"
-	// KeyUserID is the context key under which the authenticated user ID
-	// is expected to be stored (set by an auth middleware upstream).
+	// KeyUserID — ключ контекста, под которым ожидается ID
+	// аутентифицированного пользователя (устанавливается мидлварью JWT).
 	KeyUserID contextKey = "user_id"
 )
 
-// GetRequestID returns the request ID stored in ctx by the RequestID
-// middleware. It returns an empty string if no request ID is present.
+// GetRequestID возвращает request ID, сохранённый в ctx мидлварью
+// RequestID. Если request ID отсутствует, возвращает пустую строку.
 func GetRequestID(ctx context.Context) string {
 	if id, ok := ctx.Value(KeyRequestID).(string); ok {
 		return id
@@ -35,8 +35,8 @@ func GetRequestID(ctx context.Context) string {
 	return ""
 }
 
-// GetUserID returns the authenticated user ID stored in ctx. It returns 0
-// if no user ID is present.
+// GetUserID возвращает ID аутентифицированного пользователя, сохранённый
+// в ctx. Если ID отсутствует, возвращает 0.
 func GetUserID(ctx context.Context) int64 {
 	if userID, ok := ctx.Value(KeyUserID).(int64); ok {
 		return userID
@@ -45,11 +45,11 @@ func GetUserID(ctx context.Context) int64 {
 	return 0
 }
 
-// RequestID returns middleware that ensures every request carries a
-// request ID. It reuses the value of the incoming X-Request-ID header
-// when present, otherwise generates a new UUID. The resulting ID is
-// stored in the request context (retrievable via GetRequestID) and
-// echoed back to the client via the X-Request-ID response header.
+// RequestID возвращает мидлварь, гарантирующую наличие request ID у
+// каждого запроса. Переиспользует значение входящего заголовка
+// X-Request-ID, если он есть, иначе генерирует новый UUID. Итоговый ID
+// сохраняется в контексте запроса (доступен через GetRequestID) и
+// возвращается клиенту в заголовке ответа X-Request-ID.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := r.Header.Get("X-Request-ID")
@@ -65,24 +65,24 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code and
-// response size written by downstream handlers, so that Logger can
-// include them in its completion log entry.
+// responseWriter оборачивает http.ResponseWriter, чтобы перехватить код
+// статуса и размер ответа, записанные последующими хендлерами — это
+// нужно Logger, чтобы включить их в итоговую запись лога.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
 	size   int
 }
 
-// WriteHeader records the status code before delegating to the
-// underlying ResponseWriter.
+// WriteHeader запоминает код статуса перед делегированием вызова
+// вложенному ResponseWriter.
 func (rw *responseWriter) WriteHeader(status int) {
 	rw.status = status
 	rw.ResponseWriter.WriteHeader(status)
 }
 
-// Write records the number of bytes written before delegating to the
-// underlying ResponseWriter.
+// Write запоминает количество записанных байт перед делегированием
+// вызова вложенному ResponseWriter.
 func (rw *responseWriter) Write(b []byte) (int, error) {
 	size, err := rw.ResponseWriter.Write(b)
 	rw.size += size
@@ -90,10 +90,10 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return size, err
 }
 
-// Logger returns middleware that logs the start and completion of every
-// request via logger, including method, path, status code, response
-// size, and duration. It reads the request ID from context, so it
-// should typically be chained after RequestID.
+// Logger возвращает мидлварь, логирующую через logger начало и завершение
+// каждого запроса: метод, путь, код статуса, размер ответа и длительность.
+// Читает request ID из контекста, поэтому обычно должна подключаться
+// после RequestID.
 func Logger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,11 +126,11 @@ func Logger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// Recovery returns middleware that recovers from panics raised by
-// downstream handlers, logs the panic via logger, and writes a generic
-// 500 JSON error response instead of letting the panic crash the
-// server. It should typically be the outermost middleware in the chain
-// so it can catch panics from other middleware as well.
+// Recovery возвращает мидлварь, восстанавливающуюся после паник в
+// последующих хендлерах, логирующую панику через logger и отдающую
+// клиенту типовой JSON-ответ 500 вместо падения сервера. Обычно должна
+// быть самой внешней мидлварью в цепочке, чтобы перехватывать паники и
+// из других мидлварей тоже.
 func Recovery(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

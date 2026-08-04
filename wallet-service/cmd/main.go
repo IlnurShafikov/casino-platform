@@ -11,10 +11,10 @@ import (
 
 	"github.com/casino/wallet-service/internal/config"
 	"github.com/casino/wallet-service/internal/handler"
+	ourMiddleware "github.com/casino/wallet-service/internal/middleware"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/casino/wallet-service/internal/service"
 	"github.com/go-chi/chi"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -52,14 +52,25 @@ func main() {
 	walletHandler := handler.NewWalletHandler(walletSvc, logger)
 	r := chi.NewRouter()
 
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Logger)
+	r.Use(ourMiddleware.Recovery(logger))
+	r.Use(ourMiddleware.RequestID)
+	r.Use(ourMiddleware.Logger(logger))
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	walletHandler.RegisterRoutes(r)
+	authHandler := handler.NewAuthHandler([]byte(cfg.JWTSecret))
+	authHandler.RegisterRoutes(r)
+
+	r.Group(func(r chi.Router) {
+		r.Use(ourMiddleware.JWT(ourMiddleware.JWTConfig{
+			SecretKey: []byte(cfg.JWTSecret),
+		}))
+
+		walletHandler.RegisterRoutes(r)
+	})
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
