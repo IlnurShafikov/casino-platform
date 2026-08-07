@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/google/uuid"
 )
@@ -78,16 +79,19 @@ type WalletService interface {
 
 type walletService struct {
 	repo   repository.WalletRepository
+	cache  cache.WalletCache
 	logger *slog.Logger
 }
 
 // NewWalletService создаёт WalletService поверх переданного репозитория.
 func NewWalletService(
 	repo repository.WalletRepository,
+	cache cache.WalletCache,
 	logger *slog.Logger,
 ) WalletService {
 	return &walletService{
 		repo:   repo,
+		cache:  cache,
 		logger: logger,
 	}
 }
@@ -121,6 +125,26 @@ func (w *walletService) GetBalance(
 ) (*BalanceResponse, error) {
 	w.logger.InfoContext(ctx, "get balance", "user_id", userID)
 
+	cachedBalance, err := w.cache.GetBalance(ctx, userID)
+	if err != nil {
+		w.logger.WarnContext(ctx, "cache get failed, failling back to db",
+			"user_id", userID,
+			"error", err.Error(),
+		)
+	}
+
+	if cachedBalance != -1 {
+		w.logger.InfoContext(ctx, "balance from cached",
+			"user_id", userID,
+			"balance", cachedBalance,
+		)
+
+		return &BalanceResponse{
+			UserID:  userID,
+			Balance: cachedBalance,
+		}, nil
+	}
+
 	wallet, err := w.repo.GetByUserID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, repository.ErrWalletNotFound) {
@@ -129,6 +153,18 @@ func (w *walletService) GetBalance(
 
 		return nil, fmt.Errorf("get balance: %w", err)
 	}
+
+	if err := w.cache.SetBalance(ctx, userID, wallet.Balance); err != nil {
+		w.logger.WarnContext(ctx, "cached set failed",
+			"user_id", userID,
+			"error", err.Error(),
+		)
+	}
+
+	w.logger.InfoContext(ctx, "balance from db",
+		"user_id", userID,
+		"balance", wallet.Balance,
+	)
 
 	return &BalanceResponse{
 		UserID:    userID,
@@ -245,6 +281,13 @@ func (w *walletService) Deposit(
 	// defer Rollback выше уже ничего не сделает
 	if err = tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	if err := w.cache.InvalidateBalance(ctx, req.UserID); err != nil {
+		w.logger.WarnContext(ctx, "cached invalidate failed",
+			"user_id", req.UserID,
+			"error", err.Error(),
+		)
 	}
 
 	w.logger.InfoContext(ctx, "баланс пополнен",
@@ -364,6 +407,13 @@ func (w *walletService) Debit(
 
 	if err = tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("tx commit: %w", err)
+	}
+
+	if err := w.cache.InvalidateBalance(ctx, req.UserID); err != nil {
+		w.logger.WarnContext(ctx, "cached invalidate failed",
+			"user_id", req.UserID,
+			"error", err.Error(),
+		)
 	}
 
 	w.logger.InfoContext(ctx, "средства списаны успешно",
