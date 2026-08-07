@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	walletCache "github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/config"
 	"github.com/casino/wallet-service/internal/handler"
 	ourMiddleware "github.com/casino/wallet-service/internal/middleware"
@@ -47,8 +48,21 @@ func main() {
 
 	logger.Info("connected database")
 
+	redisClient, err := walletCache.NewRedisClient(ctx, cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to connect to redis",
+			"error", err.Error(),
+		)
+		os.Exit(1)
+	}
+
+	defer redisClient.Close()
+
+	logger.Info("connected tp redis")
+
+	walletCacheImpl := walletCache.NewRedisCache(redisClient)
 	walletRepo := repository.NewWalletRepository(db)
-	walletSvc := service.NewWalletService(walletRepo, logger)
+	walletSvc := service.NewWalletService(walletRepo, walletCacheImpl, logger)
 	walletHandler := handler.NewWalletHandler(walletSvc, logger)
 	r := chi.NewRouter()
 
