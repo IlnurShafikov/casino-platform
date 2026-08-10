@@ -215,7 +215,7 @@ func (b *betService) HandleMoneyDebited(
 	// Деньги списаны — теперь и только теперь разыгрываем исход. Раньше
 	// (пока деньги не списаны) выигрыш начислять нельзя: иначе игрок
 	// может выиграть за ставку, которая по факту не оплачена.
-	won, winAmount := simulateGame(betID, event.Amount)
+	won, winAmount := simulateGame(event.Amount)
 
 	finalStatus := repository.BetStatusLost
 	if won {
