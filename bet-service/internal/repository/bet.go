@@ -14,11 +14,11 @@ import (
 
 // Возможные значения статуса ставки, хранящиеся в bets.status.
 const (
-	BetStatusPending  = "PENDING"
-	BetStatusActive   = "ACTIVE"
-	BetStatusWon      = "WON"
-	BetStatusLost     = "LOST"
-	BetStatusCanceled = "CANCELED"
+	BetStatusPending   = "PENDING"
+	BetStatusActive    = "ACTIVE"
+	BetStatusWon       = "WON"
+	BetStatusLost      = "LOST"
+	BetStatusCancelled = "CANCELLED"
 )
 
 // Bet — ставка игрока, хранящаяся в таблице bets.
