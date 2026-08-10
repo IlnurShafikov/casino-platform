@@ -5,16 +5,15 @@ import "os"
 type Config struct {
 	HTTPPort     string
 	DatabaseURL  string
-	RedisURL     string
 	KafkaBrokers []string
 	JWTSecret    string
 }
 
 func Load() *Config {
 	return &Config{
-		HTTPPort:    getEnv("HTTP_PORT", "8081"),
-		DatabaseURL: getEnv("DATABASE_URL", "postgres://casino:casino123@localhost:5432/casino"),
-		RedisURL:    getEnv("REDIS_URL", "localhost:6379"),
+		HTTPPort: getEnv("HTTP_PORT", "8082"),
+		DatabaseURL: getEnv("DATABASE_URL",
+			"postgres://casino:casino123@localhost:5432/casino_bet"),
 		KafkaBrokers: []string{
 			getEnv("KAFKA_BROKERS", "localhost:9092"),
 		},

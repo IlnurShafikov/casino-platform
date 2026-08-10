@@ -9,15 +9,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/casino/bet-service/internal/config"
+	"github.com/casino/bet-service/internal/handler"
+	betKafka "github.com/casino/bet-service/internal/kafka"
+	"github.com/casino/bet-service/internal/repository"
+	"github.com/casino/bet-service/internal/service"
 	ourMiddleware "github.com/casino/shared/middleware"
-	walletCache "github.com/casino/wallet-service/internal/cache"
-	"github.com/casino/wallet-service/internal/config"
-	"github.com/casino/wallet-service/internal/handler"
-	"github.com/casino/wallet-service/internal/repository"
-	"github.com/casino/wallet-service/internal/service"
 	"github.com/go-chi/chi"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const consumerGroupID = "bet-service"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -26,7 +28,7 @@ func main() {
 
 	slog.SetDefault(logger)
 
-	logger.Info("starting wallet service")
+	logger.Info("starting bet service")
 
 	cfg := config.Load()
 
@@ -35,55 +37,62 @@ func main() {
 		"database_url", cfg.DatabaseURL,
 	)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		logger.Error("failed to ping database",
-			"error", err.Error(),
-		)
-
+		logger.Error("failed to connect to database", "error", err.Error())
 		os.Exit(1)
 	}
+
+	defer db.Close()
 
 	logger.Info("connected database")
 
-	redisClient, err := walletCache.NewRedisClient(ctx, cfg.RedisURL)
+	producer, err := betKafka.NewProducer(cfg.KafkaBrokers, logger)
 	if err != nil {
-		logger.Error("failed to connect to redis",
-			"error", err.Error(),
-		)
+		logger.Error("failed to connected to kafka producer", "error", err.Error())
 		os.Exit(1)
 	}
 
-	defer redisClient.Close()
+	defer producer.Close()
 
-	logger.Info("connected tp redis")
+	betRepo := repository.NewBetRepository(db)
+	betSvc := service.NewBetService(betRepo, producer, logger)
 
-	walletCacheImpl := walletCache.NewRedisCache(redisClient)
-	walletRepo := repository.NewWalletRepository(db)
-	walletSvc := service.NewWalletService(walletRepo, walletCacheImpl, logger)
-	walletHandler := handler.NewWalletHandler(walletSvc, logger)
+	consumer, err := betKafka.NewConsumer(cfg.KafkaBrokers, consumerGroupID, betSvc, logger)
+	if err != nil {
+		logger.Error("failed to connected to kafka consumer", "error", err.Error())
+		os.Exit(1)
+	}
+
+	defer consumer.Close()
+
+	poller := betKafka.NewOutboxPoller(betRepo, producer, logger)
+
+	go poller.Start(ctx)
+	go consumer.Start(ctx)
+
+	betHandler := handler.NewBetHandler(betSvc, logger)
 	r := chi.NewRouter()
 
 	r.Use(ourMiddleware.Recovery(logger))
 	r.Use(ourMiddleware.RequestID)
 	r.Use(ourMiddleware.Logger(logger))
+
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	authHandler := handler.NewAuthHandler([]byte(cfg.JWTSecret))
-	authHandler.RegisterRoutes(r)
-
 	r.Group(func(r chi.Router) {
 		r.Use(ourMiddleware.JWT(ourMiddleware.JWTConfig{
 			SecretKey: []byte(cfg.JWTSecret),
 		}))
 
-		walletHandler.RegisterRoutes(r)
+		betHandler.RegisterRoutes(r)
 	})
 
 	srv := &http.Server{
@@ -98,14 +107,10 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		logger.Info("wallet service startes",
-			"port", cfg.HTTPPort,
-		)
+		logger.Info("bet service started", "port", cfg.HTTPPort)
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error",
-				"error", err.Error(),
-			)
+			logger.Error("server error", "error", err.Error())
 			os.Exit(1)
 		}
 	}()
@@ -113,19 +118,20 @@ func main() {
 	<-quit
 	logger.Info("shutting down server...")
 
-	shutdownCtx, cancel := context.WithTimeout(
+	// Останавливаем фоновые горутины (poller, consumer) до того, как
+	// начнём закрывать их зависимости через defer.
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		30*time.Second,
 	)
 
-	defer cancel()
+	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("server forced to shutdown",
-			"error", err.Error(),
-		)
+		logger.Error("server forced to shutdown", "error", err.Error())
 	}
 
 	logger.Info("server stopped")
-
 }

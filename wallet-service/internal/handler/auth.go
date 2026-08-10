@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/casino/wallet-service/internal/middleware"
+	"github.com/casino/shared/middleware"
 	"github.com/go-chi/chi"
 )
 
