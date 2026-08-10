@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	ourMiddleware "github.com/casino/shared/middleware"
 	walletCache "github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/config"
 	"github.com/casino/wallet-service/internal/handler"
-	ourMiddleware "github.com/casino/wallet-service/internal/middleware"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/casino/wallet-service/internal/service"
 	"github.com/go-chi/chi"
