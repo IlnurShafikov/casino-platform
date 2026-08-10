@@ -53,6 +53,8 @@ type BetService interface {
 	// PlaceBet создаёт ставку в статусе PENDING и публикует событие
 	// bet.placed, чтобы wallet-сервис попытался списать деньги.
 	PlaceBet(ctx context.Context, req PlaceBetRequest) (*BetResponse, error)
+	// GetBet возвращает ставку по её ID.
+	GetBet(ctx context.Context, betID int64) (*BetResponse, error)
 	// HandleMoneyDebited обрабатывает подтверждение списания денег:
 	// разыгрывает исход ставки и переводит её в WON/LOST.
 	HandleMoneyDebited(ctx context.Context, event events.MoneyDebited) error
@@ -170,6 +172,15 @@ func (b *betService) PlaceBet(
 		"amount", req.Amount,
 		"status", bet.Status,
 	)
+
+	return betToResponse(bet), nil
+}
+
+func (b *betService) GetBet(ctx context.Context, betID int64) (*BetResponse, error) {
+	bet, err := b.repo.GetByID(ctx, betID)
+	if err != nil {
+		return nil, fmt.Errorf("get bet: %w", err)
+	}
 
 	return betToResponse(bet), nil
 }
