@@ -81,15 +81,17 @@ func (c *Consumer) Setup(sarama.ConsumerGroupSession) error { return nil }
 // завершения цикла обработки на каждой ребалансировке.
 func (c *Consumer) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
+// ConsumeClaim реализует sarama.ConsumerGroupHandler — читает сообщения
+// одной партиции и передаёт их в handler.
 func (c *Consumer) ConsumeClaim(
 	session sarama.ConsumerGroupSession,
-	calaim sarama.ConsumerGroupClaim,
+	claim sarama.ConsumerGroupClaim,
 ) error {
 	for {
 		select {
 		case <-session.Context().Done():
 			return nil
-		case msg, ok := <-calaim.Messages():
+		case msg, ok := <-claim.Messages():
 			if !ok {
 				return nil
 			}
@@ -99,6 +101,10 @@ func (c *Consumer) ConsumeClaim(
 	}
 }
 
+// handleMessage разбирает и обрабатывает одно сообщение. Offset коммитится
+// (session.MarkMessage) только после успешной обработки — если она
+// завершилась ошибкой, сообщение не отмечается прочитанным и будет
+// прочитано повторно (например, после перезапуска сервиса).
 func (c *Consumer) handleMessage(
 	session sarama.ConsumerGroupSession,
 	msg *sarama.ConsumerMessage,
