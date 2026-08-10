@@ -216,6 +216,20 @@ func (b *betService) HandleMoneyDebited(
 		return fmt.Errorf("parse bet_id: %w", err)
 	}
 
+	bet, err := b.repo.GetByID(ctx, betID)
+	if err != nil {
+		return fmt.Errorf("get bet: %w", err)
+	}
+
+	if bet.Status != repository.BetStatusPending {
+		b.logger.InfoContext(ctx, "bet already settled, skipping",
+			"bet_id", betID,
+			"status", bet.Status,
+		)
+
+		return nil
+	}
+
 	tx, err := b.repo.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -277,6 +291,20 @@ func (b *betService) HandleMoneyDebitFailed(
 	_, err := fmt.Sscanf(event.BetID, "%d", &betID)
 	if err != nil {
 		return fmt.Errorf("parse bet_id: %w", err)
+	}
+
+	bet, err := b.repo.GetByID(ctx, betID)
+	if err != nil {
+		return fmt.Errorf("get bet: %w", err)
+	}
+
+	if bet.Status != repository.BetStatusPending {
+		b.logger.InfoContext(ctx, "bet already resolved, skipping",
+			"bet_id", betID,
+			"status", bet.Status,
+		)
+
+		return nil
 	}
 
 	tx, err := b.repo.BeginTx(ctx)

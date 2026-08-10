@@ -1,0 +1,142 @@
+package kafka
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/IBM/sarama"
+	"github.com/casino/shared/events"
+)
+
+// EventHandler описывает обработку событий, на которые подписан Consumer.
+// Интерфейс объявлен здесь, а не в internal/service, чтобы не получить
+// цикл импортов (service импортирует kafka ради Producer). Реализуется
+// service.BetService — Go сопоставляет их структурно, без явной ссылки.
+type EventHandler interface {
+	HandleMoneyDebited(ctx context.Context, event events.MoneyDebited) error
+	HandleMoneyDebitFailed(ctx context.Context, event events.MoneyDebitFailed) error
+}
+
+type Consumer struct {
+	group   sarama.ConsumerGroup
+	handler EventHandler
+	logger  *slog.Logger
+	topics  []string
+}
+
+func NewConsumer(
+	brokers []string,
+	groupID string,
+	handler EventHandler,
+	logger *slog.Logger,
+) (*Consumer, error) {
+	config := sarama.NewConfig()
+	config.Consumer.Offsets.Initial = sarama.OffsetOldest
+
+	group, err := sarama.NewConsumerGroup(brokers, groupID, config)
+	if err != nil {
+		return nil, fmt.Errorf("create consumer group: %w", err)
+	}
+
+	return &Consumer{
+		group:   group,
+		handler: handler,
+		logger:  logger,
+		topics:  []string{events.TopicMoneyDebited, events.TopicMoneyDebitFailed},
+	}, nil
+}
+
+func (c *Consumer) Start(ctx context.Context) {
+	c.logger.Info("kafka consumer started", "topics", c.topics)
+
+	for {
+		if err := c.group.Consume(ctx, c.topics, c); err != nil {
+			if errors.Is(err, sarama.ErrClosedConsumerGroup) {
+				return
+			}
+
+			c.logger.Error("consumer group error", "error", err.Error())
+		}
+
+		if ctx.Err() != nil {
+			c.logger.Info("kafka consumer stopped")
+
+			return
+		}
+	}
+}
+
+func (c *Consumer) Close() error {
+	return c.group.Close()
+}
+
+// Setup реализует sarama.ConsumerGroupHandler — вызывается перед началом
+// цикла обработки на каждой ребалансировке.
+func (c *Consumer) Setup(sarama.ConsumerGroupSession) error { return nil }
+
+// Cleanup реализует sarama.ConsumerGroupHandler — вызывается после
+// завершения цикла обработки на каждой ребалансировке.
+func (c *Consumer) Cleanup(sarama.ConsumerGroupSession) error { return nil }
+
+func (c *Consumer) ConsumeClaim(
+	session sarama.ConsumerGroupSession,
+	calaim sarama.ConsumerGroupClaim,
+) error {
+	for {
+		select {
+		case <-session.Context().Done():
+			return nil
+		case msg, ok := <-calaim.Messages():
+			if !ok {
+				return nil
+			}
+
+			c.handleMessage(session, msg)
+		}
+	}
+}
+
+func (c *Consumer) handleMessage(
+	session sarama.ConsumerGroupSession,
+	msg *sarama.ConsumerMessage,
+) {
+	ctx := session.Context()
+
+	var err error
+
+	switch msg.Topic {
+	case events.TopicMoneyDebited:
+		var event events.MoneyDebited
+
+		if err = json.Unmarshal(msg.Value, &event); err == nil {
+			err = c.handler.HandleMoneyDebited(ctx, event)
+		}
+	case events.TopicMoneyDebitFailed:
+		var event events.MoneyDebitFailed
+
+		if err = json.Unmarshal(msg.Value, &event); err == nil {
+			err = c.handler.HandleMoneyDebitFailed(ctx, event)
+		}
+	default:
+		c.logger.Warn("unexpected topic", "topic", msg.Topic)
+		session.MarkMessage(msg, "")
+
+		return
+	}
+
+	if err != nil {
+		c.logger.Error("failed to process message",
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
+			"error", err.Error(),
+		)
+
+		return
+	}
+
+	session.MarkMessage(msg, "")
+}
