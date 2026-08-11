@@ -2,24 +2,13 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-var (
-	// ErrWalletNotFound возвращается, когда кошелёк с указанным user_id отсутствует в БД.
-	ErrWalletNotFound = errors.New("wallet not found")
-	// ErrInsufficientFunds возвращается при попытке списать больше, чем есть на балансе.
-	ErrInsufficientFunds = errors.New("insufficient funds")
-	// ErrDuplicateKey возвращается при конфликте уникального ограничения
-	// (например, при гонке на optimistic locking по полю version).
-	ErrDuplicateKey = errors.New("duplicate key")
-	// ErrInvalidAmount возвращается, когда сумма операции не положительна.
-	ErrInvalidAmount = errors.New("amount must be positive")
 )
 
 // Wallet — кошелёк игрока с текущим балансом и версией для optimistic locking.
@@ -45,6 +34,13 @@ type Transaction struct {
 	IdempotencyKey string
 }
 
+// OutboxEvent — событие паттерна transactional outbox, ожидающее публикации.
+type OutboxEvent struct {
+	ID        int64
+	EventType string
+	Payload   []byte
+}
+
 // WalletRepository инкапсулирует доступ к хранилищу кошельков и транзакций.
 type WalletRepository interface {
 	// Create создаёт новый кошелёк с нулевым балансом для указанного userID.
@@ -65,6 +61,15 @@ type WalletRepository interface {
 	GetTransactionByIdempotencyKey(ctx context.Context, key string) (*Transaction, error)
 	// BeginTx открывает новую транзакцию БД.
 	BeginTx(ctx context.Context) (pgx.Tx, error)
+	// CreateOutboxEvent записывает событие в outbox в рамках переданной транзакции.
+	CreateOutboxEvent(ctx context.Context, tx pgx.Tx, eventType string, payload any) error
+	// GetPendingOutboxEvents выбирает и блокирует до limit неотправленных
+	// outbox-событий в рамках переданной транзакции (SELECT ... FOR UPDATE
+	// SKIP LOCKED), чтобы конкурентные воркеры не забрали одни и те же события.
+	GetPendingOutboxEvents(ctx context.Context, tx pgx.Tx, limit int) ([]OutboxEvent, error)
+	// MarkOutboxEventSent помечает outbox-событие как отправленное в рамках
+	// переданной транзакции.
+	MarkOutboxEventSent(ctx context.Context, tx pgx.Tx, id int64) error
 }
 
 type walletRepository struct {
@@ -83,6 +88,7 @@ func (r *walletRepository) Create(ctx context.Context, userID int64) (*Wallet, e
 	err := r.db.QueryRow(ctx, `
 	INSERT INTO wallets (user_id, balance, version)
 	VALUES ($1, 0, 0)
+	ON CONFLICT (user_id) DO UPDATE SET user_id = wallets.user_id
 	RETURNING id, user_id, balance, version
 	`, userID).Scan(
 		&wallet.ID,
@@ -265,4 +271,77 @@ func (r *walletRepository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	}
 
 	return tx, nil
+}
+
+func (r *walletRepository) CreateOutboxEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	eventType string,
+	payload any,
+) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
+	INSERT INTO outbox (event_type, payload)
+	VALUES ($1, $2)
+	`, eventType, data)
+	if err != nil {
+		return fmt.Errorf("create outbox event: %w", err)
+	}
+
+	return nil
+}
+
+func (r *walletRepository) GetPendingOutboxEvents(
+	ctx context.Context,
+	tx pgx.Tx,
+	limit int,
+) ([]OutboxEvent, error) {
+	rows, err := tx.Query(ctx, `
+	SELECT id, event_type, payload
+	FROM outbox
+	WHERE sent = false
+	ORDER BY created_at
+	LIMIT $1
+	FOR UPDATE SKIP LOCKED
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get pending outbox events: %w", err)
+	}
+
+	defer rows.Close()
+
+	events := make([]OutboxEvent, 0, limit)
+
+	for rows.Next() {
+		var event OutboxEvent
+
+		err := rows.Scan(&event.ID, &event.EventType, &event.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("scan outbox event: %w", err)
+		}
+
+		events = append(events, event)
+	}
+
+	return events, nil
+}
+
+func (r *walletRepository) MarkOutboxEventSent(
+	ctx context.Context,
+	tx pgx.Tx,
+	id int64,
+) error {
+	_, err := tx.Exec(ctx, `
+	UPDATE outbox SET sent = true WHERE id = $1
+	`, id)
+
+	if err != nil {
+		return fmt.Errorf("mark outbox event sent: %w", err)
+	}
+
+	return nil
 }
