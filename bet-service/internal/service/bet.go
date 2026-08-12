@@ -194,6 +194,7 @@ func betToResponse(bet *repository.Bet) *BetResponse {
 		GameType:  bet.GameType,
 		Status:    bet.Status,
 		WinAmount: bet.WinAmount,
+		CreatedAt: bet.CreatedAt,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,7 @@ type Bet struct {
 	Status         string
 	WinAmount      int64
 	IdempotencyKey string
+	CreatedAt      time.Time
 }
 
 // NewBet создаёт пустую ставку с нулевыми значениями полей.
@@ -90,14 +92,14 @@ func (b *betRepository) Create(
 	err := tx.QueryRow(ctx, `
 	INSERT INTO bets (user_id, amount, game_type, status, idempotency_key)
 	VALUES ($1, $2, $3, $4, $5)
-	RETURNING id
+	RETURNING id, created_at
 	`,
 		bet.UserID,
 		bet.Amount,
 		bet.GameType,
 		bet.Status,
 		bet.IdempotencyKey,
-	).Scan(&bet.ID)
+	).Scan(&bet.ID, &bet.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create bet: %w", err)
 	}
@@ -114,7 +116,7 @@ func (b *betRepository) GetByID(
 
 	err := b.db.QueryRow(ctx, `
 	SELECT id, user_id, amount, game_type,
-	status, win_amount, idempotency_key
+	status, win_amount, idempotency_key, created_at
 	FROM bets
 	WHERE id = $1
 	`, id).Scan(
@@ -125,6 +127,7 @@ func (b *betRepository) GetByID(
 		&bet.Status,
 		&bet.WinAmount,
 		&bet.IdempotencyKey,
+		&bet.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -168,7 +171,7 @@ func (b *betRepository) GetByIdempotencyKey(
 
 	err := b.db.QueryRow(ctx, `
 	SELECT id, user_id, amount, game_type,
-		   status, win_amount, idempotency_key
+		   status, win_amount, idempotency_key, created_at
 	FROM bets
 	WHERE idempotency_key = $1
 	`, key).Scan(
@@ -179,6 +182,7 @@ func (b *betRepository) GetByIdempotencyKey(
 		&bet.Status,
 		&bet.WinAmount,
 		&bet.IdempotencyKey,
+		&bet.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -245,7 +249,7 @@ func (b *betRepository) GetPendingOutboxEvents(
 
 	defer rows.Close()
 
-	var events []OutboxEvent
+	events := make([]OutboxEvent, 0, limit)
 
 	for rows.Next() {
 		var event OutboxEvent

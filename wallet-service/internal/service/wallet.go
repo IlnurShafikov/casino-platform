@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/casino/shared/events"
 	"github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Типы транзакций, сохраняемые в repository.Transaction.Type.
@@ -75,6 +77,13 @@ type WalletService interface {
 	// не приводит к повторному списанию — возвращается результат первого вызова.
 	// Возвращает repository.ErrInsufficientFunds, если средств недостаточно.
 	Debit(ctx context.Context, req DebitRequest) (*TransactionResponse, error)
+	// HandleBetPlaced обрабатывает событие bet.placed от bet-service: пытается
+	// списать деньги под размещённую ставку и публикует результат
+	// (money.debited или money.debit.failed) через transactional outbox.
+	HandleBetPlaced(ctx context.Context, event events.BetPlaced) error
+	// HandleBetSettled обрабатывает событие bet.settled от bet-service:
+	// зачисляет выигрыш на баланс, если ставка выиграна.
+	HandleBetSettled(ctx context.Context, event events.BetSettled) error
 }
 
 type walletService struct {
@@ -307,6 +316,66 @@ func (w *walletService) Deposit(
 	}, nil
 }
 
+// debitWithinTx списывает amount с баланса req.UserID в рамках уже открытой
+// транзакции tx: блокирует кошелёк (FOR UPDATE), проверяет баланс, обновляет
+// его и записывает Transaction. Не открывает и не коммитит транзакцию, не
+// проверяет идемпотентность — это ответственность вызывающего, у которого
+// может быть своя семантика повторных вызовов (HTTP-ретрай по ключу vs
+// at-least-once доставка из Kafka).
+func (w *walletService) debitWithinTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	req DebitRequest,
+) (*TransactionResponse, error) {
+	wallet, err := w.repo.GetByUserIDForUpdate(ctx, tx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("get wallet: %w", err)
+	}
+
+	if wallet.Balance < req.Amount {
+		w.logger.WarnContext(ctx, "insufficient funds",
+			"user_id", req.UserID,
+			"balance", wallet.Balance,
+			"requested", req.Amount,
+		)
+
+		return nil, repository.ErrInsufficientFunds
+	}
+
+	balanceBefore := wallet.Balance
+	balanceAfter := wallet.Balance - req.Amount
+
+	err = w.repo.UpdateBalance(ctx, tx, wallet, balanceAfter)
+	if err != nil {
+		return nil, fmt.Errorf("update balance: %w", err)
+	}
+
+	t := &repository.Transaction{
+		UserID:         req.UserID,
+		Type:           TransactionTypeDebit,
+		Amount:         req.Amount,
+		BalanceBefore:  balanceBefore,
+		BalanceAfter:   balanceAfter,
+		ReferenceID:    req.ReferenceID,
+		ReferenceType:  req.ReferenceType,
+		IdempotencyKey: req.IdempotencyKey,
+	}
+
+	err = w.repo.CreateTransaction(ctx, tx, t)
+	if err != nil {
+		return nil, fmt.Errorf("create transaction: %w", err)
+	}
+
+	return &TransactionResponse{
+		ID:            t.ID,
+		UserID:        req.UserID,
+		Type:          TransactionTypeDebit,
+		Amount:        req.Amount,
+		BalanceBefore: balanceBefore,
+		BalanceAfter:  balanceAfter,
+	}, nil
+}
+
 // Debit списывает средства с баланса игрока в рамках БД-транзакции с блокировкой
 // строки кошелька; блокировка берётся до проверки баланса, чтобы исключить гонку
 // между чтением баланса и его обновлением. Повторный вызов с тем же IdempotencyKey
@@ -355,54 +424,9 @@ func (w *walletService) Debit(
 
 	defer tx.Rollback(ctx)
 
-	// Получаем кошелёк с блокировкой FOR UPDATE
-	// ВАЖНО: блокируем ДО проверки баланса
-	// Иначе другой запрос может изменить баланс
-	// между нашей проверкой и нашим UPDATE
-	wallet, err := w.repo.GetByUserIDForUpdate(ctx, tx, req.UserID)
+	resp, err := w.debitWithinTx(ctx, tx, req)
 	if err != nil {
-		return nil, fmt.Errorf("get wallet: %w", err)
-	}
-
-	// Главная проверка — хватает ли денег?
-	// Делаем ПОСЛЕ блокировки строки
-	if wallet.Balance < req.Amount {
-		w.logger.WarnContext(ctx, "insufficient funds",
-			"user_id", req.UserID,
-			"balance", wallet.Balance,
-			"requested", req.Amount)
-
-		// Возвращаем конкретную ошибку
-		// Handler вернёт 422 клиенту
-		return nil, repository.ErrInsufficientFunds
-	}
-
-	balanceBefore := wallet.Balance
-	balanceAfter := wallet.Balance - req.Amount
-
-	// Обновляем баланс
-	err = w.repo.UpdateBalance(ctx, tx, wallet, balanceAfter)
-	if err != nil {
-		return nil, fmt.Errorf("update balance: %w", err)
-	}
-
-	// Записываем транзакцию
-	// ReferenceID и ReferenceType — ссылка на ставку
-	// Чтобы в истории было видно: "списано за ставку bet-123"
-	t := &repository.Transaction{
-		UserID:         req.UserID,
-		Type:           TransactionTypeDebit,
-		Amount:         req.Amount,
-		BalanceBefore:  balanceBefore,
-		BalanceAfter:   balanceAfter,
-		ReferenceID:    req.ReferenceID,
-		ReferenceType:  req.ReferenceType,
-		IdempotencyKey: req.IdempotencyKey,
-	}
-
-	err = w.repo.CreateTransaction(ctx, tx, t)
-	if err != nil {
-		return nil, fmt.Errorf("create transaction: %w", err)
+		return nil, err
 	}
 
 	if err = tx.Commit(ctx); err != nil {
@@ -419,16 +443,118 @@ func (w *walletService) Debit(
 	w.logger.InfoContext(ctx, "средства списаны успешно",
 		"user_id", req.UserID,
 		"amount", req.Amount,
-		"balance_before", balanceBefore,
-		"balance_after", balanceAfter,
+		"balance_before", resp.BalanceBefore,
+		"balance_after", resp.BalanceAfter,
 	)
 
-	return &TransactionResponse{
-		ID:            t.ID,
-		UserID:        req.UserID,
-		Type:          TransactionTypeDebit,
-		Amount:        req.Amount,
-		BalanceBefore: balanceBefore,
-		BalanceAfter:  balanceAfter,
-	}, nil
+	return resp, nil
+}
+
+func (w *walletService) HandleBetPlaced(ctx context.Context, event events.BetPlaced) error {
+	w.logger.InfoContext(ctx, "bet placed event received",
+		"bet_id", event.BetID,
+		"user_id", event.UserID,
+		"amount", event.Amount,
+	)
+
+	req := DebitRequest{
+		UserID:         event.UserID,
+		Amount:         event.Amount,
+		IdempotencyKey: "bet-placed:" + event.BetID,
+		ReferenceID:    event.BetID,
+		ReferenceType:  "BET",
+	}
+
+	existing, err := w.repo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+	if err != nil {
+		return fmt.Errorf("check idempotency: %w", err)
+	}
+
+	if existing != nil {
+		w.logger.InfoContext(ctx, "bet.placed already processed, skipping",
+			"bet_id", event.BetID,
+		)
+
+		return nil
+	}
+
+	tx, err := w.repo.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	defer tx.Rollback(ctx)
+
+	_, debitErr := w.debitWithinTx(ctx, tx, req)
+
+	switch {
+	case debitErr == nil:
+		outboxEvent := events.MoneyDebited{
+			BetID:     event.BetID,
+			UserID:    event.UserID,
+			Amount:    event.Amount,
+			DebitedAt: time.Now(),
+		}
+
+		if err := w.repo.CreateOutboxEvent(ctx, tx,
+			events.TopicMoneyDebited, outboxEvent); err != nil {
+			return fmt.Errorf("create outbox event: %w", err)
+		}
+	case errors.Is(debitErr, repository.ErrInsufficientFunds):
+		outboxEvent := events.MoneyDebitFailed{
+			BetID:    event.BetID,
+			UserID:   event.UserID,
+			Amount:   event.Amount,
+			Reason:   "insufficient funds",
+			FailedAt: time.Now(),
+		}
+
+		if err := w.repo.CreateOutboxEvent(ctx, tx,
+			events.TopicMoneyDebitFailed, outboxEvent); err != nil {
+			return fmt.Errorf("create outbox event: %w", err)
+		}
+	default:
+		return fmt.Errorf("debit: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("tx commit: %w", err)
+	}
+
+	if err := w.cache.InvalidateBalance(ctx, event.UserID); err != nil {
+		w.logger.WarnContext(ctx, "cache invalidate failed",
+			"user_id", event.UserID,
+			"error", err.Error(),
+		)
+	}
+
+	return nil
+
+}
+
+func (w *walletService) HandleBetSettled(
+	ctx context.Context,
+	event events.BetSettled,
+) error {
+	w.logger.InfoContext(ctx, "bet settled event received",
+		"bet_id", event.BetID,
+		"user_id", event.UserID,
+		"won", event.Won,
+		"win_amount", event.WinAmount,
+	)
+
+	if !event.Won || event.WinAmount <= 0 {
+		return nil
+	}
+
+	_, err := w.Deposit(ctx, DepositRequest{
+		UserID:         event.UserID,
+		Amount:         event.WinAmount,
+		IdempotencyKey: "bet-settled:" + event.BetID,
+	})
+	if err != nil {
+		return fmt.Errorf("credit winnings: %w", err)
+	}
+
+	return nil
 }

@@ -13,11 +13,18 @@ import (
 	walletCache "github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/config"
 	"github.com/casino/wallet-service/internal/handler"
+	walletKafka "github.com/casino/wallet-service/internal/kafka"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/casino/wallet-service/internal/service"
 	"github.com/go-chi/chi"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// consumerGroupID — ID consumer group wallet-сервиса в Kafka. Все запущенные
+// инстансы wallet-service должны использовать одно и то же значение, чтобы
+// делить партиции между собой, а не читать одни и те же события каждый
+// сам по себе.
+const consumerGroupID = "wallet-service"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -35,7 +42,8 @@ func main() {
 		"database_url", cfg.DatabaseURL,
 	)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -60,9 +68,31 @@ func main() {
 
 	logger.Info("connected tp redis")
 
+	producer, err := walletKafka.NewProducer(cfg.KafkaBrokers, logger)
+	if err != nil {
+		logger.Error("failed to connect to kafka producer", "error", err.Error())
+		os.Exit(1)
+	}
+
+	defer producer.Close()
+
 	walletCacheImpl := walletCache.NewRedisCache(redisClient)
 	walletRepo := repository.NewWalletRepository(db)
 	walletSvc := service.NewWalletService(walletRepo, walletCacheImpl, logger)
+
+	consumer, err := walletKafka.NewConsumer(cfg.KafkaBrokers, consumerGroupID, walletSvc, logger)
+	if err != nil {
+		logger.Error("failed to connect to kafka consumer", "error", err.Error())
+		os.Exit(1)
+	}
+
+	defer consumer.Close()
+
+	poller := walletKafka.NewOutboxPoller(walletRepo, producer, logger)
+
+	go poller.Start(ctx)
+	go consumer.Start(ctx)
+
 	walletHandler := handler.NewWalletHandler(walletSvc, logger)
 	r := chi.NewRouter()
 
@@ -98,7 +128,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		logger.Info("wallet service startes",
+		logger.Info("wallet service started",
 			"port", cfg.HTTPPort,
 		)
 
@@ -113,12 +143,16 @@ func main() {
 	<-quit
 	logger.Info("shutting down server...")
 
-	shutdownCtx, cancel := context.WithTimeout(
+	// Останавливаем фоновые горутины (poller, consumer) до того, как
+	// начнём закрывать их зависимости через defer.
+	cancel()
+
+	shutdownCtx, shutdowCancel := context.WithTimeout(
 		context.Background(),
 		30*time.Second,
 	)
 
-	defer cancel()
+	defer shutdowCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server forced to shutdown",
@@ -127,5 +161,4 @@ func main() {
 	}
 
 	logger.Info("server stopped")
-
 }
