@@ -536,8 +536,8 @@ func (w *walletService) HandleBetSettled(
 	ctx context.Context,
 	event events.BetSettled,
 ) error {
-	w.logger.InfoContext(ctx, "bet settled event recieved",
-		"bey_id", event.BetID,
+	w.logger.InfoContext(ctx, "bet settled event received",
+		"bet_id", event.BetID,
 		"user_id", event.UserID,
 		"won", event.Won,
 		"win_amount", event.WinAmount,

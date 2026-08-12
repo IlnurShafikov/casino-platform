@@ -7,7 +7,8 @@
     { "key": "wallet_url", "value": "http://localhost:8081" },
     { "key": "bet_url", "value": "http://localhost:8082" },
     { "key": "token", "value": "" },
-    { "key": "user_id", "value": "1" }
+    { "key": "user_id", "value": "1" },
+    { "key": "bet_id", "value": "" }
   ],
   "item": [
     {
@@ -20,6 +21,7 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const body = pm.response.json();",
                   "pm.collectionVariables.set('token', body.token);"
                 ]
@@ -43,6 +45,16 @@
       "item": [
         {
           "name": "Create wallet",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 201 (get-or-create, safe to re-run)', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -55,6 +67,16 @@
         },
         {
           "name": "Get balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
@@ -63,6 +85,16 @@
         },
         {
           "name": "Deposit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -75,7 +107,17 @@
           }
         },
         {
-          "name": "Debit",
+          "name": "Debit (manual, bypasses bet-service)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -85,9 +127,10 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"amount\": 500,\n  \"reference_id\": \"1\",\n  \"reference_type\": \"BET\"\n}"
+              "raw": "{\n  \"amount\": 500,\n  \"reference_id\": \"manual\",\n  \"reference_type\": \"BET\"\n}"
             },
-            "url": "{{wallet_url}}/wallets/{{user_id}}/debit"
+            "url": "{{wallet_url}}/wallets/{{user_id}}/debit",
+            "description": "Прямой вызов HTTP-эндпоинта списания в обход bet-service/Kafka. В обычном флоу (Place bet) списание происходит автоматически через money.debited после bet.placed — этот запрос сюда не входит, он для точечной проверки wallet-service отдельно."
           }
         }
       ]
@@ -102,8 +145,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "const body = pm.response.json();",
-                  "if (body.id) { pm.collectionVariables.set('bet_id', body.id); }"
+                  "if (body.id) { pm.collectionVariables.set('bet_id', body.id); }",
+                  "pm.test('status is PENDING right after placing', () => pm.expect(body.status).to.eql('PENDING'));"
                 ]
               }
             }
@@ -123,12 +168,25 @@
           }
         },
         {
-          "name": "Get bet",
+          "name": "Get bet (wait ~1s after Place bet)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('bet is settled (WON/LOST/CANCELLED), not stuck PENDING', () => pm.expect(body.status).to.not.eql('PENDING'));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
             "url": "{{bet_url}}/bets/{{bet_id}}"
-          }
+          },
+          "description": "Ставка разыгрывается асинхронно через Kafka (bet.placed → money.debited/money.debit.failed → bet.settled), обычно за доли секунды. Если тест 'bet is settled' падает — либо consumer в wallet-service не запущен, либо не успел обработать, повтори запрос."
         }
       ]
     }
