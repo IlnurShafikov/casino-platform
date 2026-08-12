@@ -26,10 +26,11 @@ type mockOutboxEvent struct {
 }
 
 type mockBetRepository struct {
-	bets          map[int64]*repository.Bet
-	byIdempotency map[string]int64
-	outboxEvents  []mockOutboxEvent
-	nextID        int64
+	bets              map[int64]*repository.Bet
+	byIdempotency     map[string]int64
+	outboxEvents      []mockOutboxEvent
+	nextID            int64
+	updateStatusCalls int
 
 	createErr error
 }
@@ -86,6 +87,8 @@ func (m *mockBetRepository) UpdateStatus(
 	status string,
 	winAmount int64,
 ) error {
+	m.updateStatusCalls++
+
 	bet, ok := m.bets[id]
 	if !ok {
 		return repository.ErrBetNotFound
