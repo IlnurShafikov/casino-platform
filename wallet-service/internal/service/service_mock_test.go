@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	sharedKafka "github.com/casino/shared/kafka"
 	"github.com/casino/wallet-service/internal/repository"
 	"github.com/jackc/pgx/v5"
 )
@@ -140,7 +141,7 @@ func (f *mockWalletRepository) GetPendingOutboxEvents(
 	context.Context,
 	pgx.Tx,
 	int,
-) ([]repository.OutboxEvent, error) {
+) ([]sharedKafka.OutboxEvent, error) {
 	return nil, nil
 }
 

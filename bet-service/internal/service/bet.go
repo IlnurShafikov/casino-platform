@@ -9,9 +9,9 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/casino/bet-service/internal/kafka"
 	"github.com/casino/bet-service/internal/repository"
 	"github.com/casino/shared/events"
+	sharedKafka "github.com/casino/shared/kafka"
 	"github.com/google/uuid"
 )
 
@@ -66,7 +66,7 @@ type BetService interface {
 // betService — реализация BetService.
 type betService struct {
 	repo     repository.BetRepository
-	producer kafka.Producer
+	producer sharedKafka.Producer
 	logger   *slog.Logger
 }
 
@@ -74,7 +74,7 @@ type betService struct {
 // Kafka-продюсера.
 func NewBetService(
 	repo repository.BetRepository,
-	producer kafka.Producer,
+	producer sharedKafka.Producer,
 	logger *slog.Logger,
 ) BetService {
 	return &betService{

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	sharedKafka "github.com/casino/shared/kafka"
 	ourMiddleware "github.com/casino/shared/middleware"
 	walletCache "github.com/casino/wallet-service/internal/cache"
 	"github.com/casino/wallet-service/internal/config"
@@ -68,7 +69,7 @@ func main() {
 
 	logger.Info("connected tp redis")
 
-	producer, err := walletKafka.NewProducer(cfg.KafkaBrokers, logger)
+	producer, err := sharedKafka.NewProducer(cfg.KafkaBrokers, logger)
 	if err != nil {
 		logger.Error("failed to connect to kafka producer", "error", err.Error())
 		os.Exit(1)
@@ -88,7 +89,7 @@ func main() {
 
 	defer consumer.Close()
 
-	poller := walletKafka.NewOutboxPoller(walletRepo, producer, logger)
+	poller := sharedKafka.NewOutboxPoller(walletRepo, producer, logger)
 
 	go poller.Start(ctx)
 	go consumer.Start(ctx)
@@ -147,12 +148,12 @@ func main() {
 	// начнём закрывать их зависимости через defer.
 	cancel()
 
-	shutdownCtx, shutdowCancel := context.WithTimeout(
+	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		30*time.Second,
 	)
 
-	defer shutdowCancel()
+	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server forced to shutdown",

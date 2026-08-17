@@ -14,6 +14,7 @@ import (
 	betKafka "github.com/casino/bet-service/internal/kafka"
 	"github.com/casino/bet-service/internal/repository"
 	"github.com/casino/bet-service/internal/service"
+	sharedKafka "github.com/casino/shared/kafka"
 	ourMiddleware "github.com/casino/shared/middleware"
 	"github.com/go-chi/chi"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,7 +51,7 @@ func main() {
 
 	logger.Info("connected database")
 
-	producer, err := betKafka.NewProducer(cfg.KafkaBrokers, logger)
+	producer, err := sharedKafka.NewProducer(cfg.KafkaBrokers, logger)
 	if err != nil {
 		logger.Error("failed to connected to kafka producer", "error", err.Error())
 		os.Exit(1)
@@ -69,7 +70,7 @@ func main() {
 
 	defer consumer.Close()
 
-	poller := betKafka.NewOutboxPoller(betRepo, producer, logger)
+	poller := sharedKafka.NewOutboxPoller(betRepo, producer, logger)
 
 	go poller.Start(ctx)
 	go consumer.Start(ctx)
