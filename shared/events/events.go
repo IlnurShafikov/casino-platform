@@ -2,6 +2,15 @@ package events
 
 import "time"
 
+// UserRegistered — событие когда пользователь зарегистрировался
+// Публикует Auth Service
+// Читает Wallet Service
+type UserRegistered struct {
+	UserID       int64     `json:"user_id"`
+	Email        string    `json:"email"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
 // BetPlaced — событие когда игрок сделал ставку
 // Публикует Bet Service
 // Читает Wallet Service
@@ -47,6 +56,7 @@ type MoneyDebitFailed struct {
 
 // Названия топиков в Kafka
 const (
+	TopicUserRegistered   = "user.registered"
 	TopicBetPlaced        = "bet.placed"
 	TopicBetSettled       = "bet.settled"
 	TopicMoneyDebited     = "money.debited"

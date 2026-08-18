@@ -29,7 +29,7 @@ type User struct {
 type UserRepository interface {
 	// Create создаёт пользователя с уже захешированным паролем.
 	// Возвращает ErrEmailAlreadyExists, если email занят.
-	Create(ctx context.Context, email, passwordHash string) (*User, error)
+	Create(ctx context.Context, tx pgx.Tx, email, passwordHash string) (*User, error)
 	// GetByEmail возвращает пользователя по email. Если пользователь не
 	// найден, возвращает ErrUserNotFound.
 	GetByEmail(ctx context.Context, email string) (*User, error)
@@ -59,11 +59,12 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 // Create реализует UserRepository.
 func (u *userRepository) Create(
 	ctx context.Context,
+	tx pgx.Tx,
 	email, passwordHash string,
 ) (*User, error) {
 	user := &User{}
 
-	err := u.db.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 	INSERT INTO users (email, password_hash)
 	VALUES ($1, $2)
 	RETURNING id, email, password_hash, created_at
