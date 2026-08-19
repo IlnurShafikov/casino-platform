@@ -18,6 +18,7 @@ import (
 type EventHandler interface {
 	HandleBetPlaced(ctx context.Context, event events.BetPlaced) error
 	HandleBetSettled(ctx context.Context, event events.BetSettled) error
+	HandleUserRegistered(ctx context.Context, event events.UserRegistered) error
 }
 
 type Consumer struct {
@@ -45,7 +46,8 @@ func NewConsumer(
 		group:   group,
 		handler: handler,
 		logger:  logger,
-		topics:  []string{events.TopicBetPlaced, events.TopicBetSettled},
+		topics: []string{
+			events.TopicBetPlaced, events.TopicBetSettled, events.TopicUserRegistered},
 	}, nil
 }
 
@@ -126,6 +128,12 @@ func (c *Consumer) handleMessage(
 
 		if err = json.Unmarshal(msg.Value, &event); err == nil {
 			err = c.handler.HandleBetSettled(ctx, event)
+		}
+	case events.TopicUserRegistered:
+		var event events.UserRegistered
+
+		if err = json.Unmarshal(msg.Value, &event); err == nil {
+			err = c.handler.HandleUserRegistered(ctx, event)
 		}
 	default:
 		c.logger.Warn("unexpected topic", "topic", msg.Topic)

@@ -106,9 +106,6 @@ func main() {
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	authHandler := handler.NewAuthHandler([]byte(cfg.JWTSecret))
-	authHandler.RegisterRoutes(r)
-
 	r.Group(func(r chi.Router) {
 		r.Use(ourMiddleware.JWT(ourMiddleware.JWTConfig{
 			SecretKey: []byte(cfg.JWTSecret),
