@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	sharedKafka "github.com/casino/shared/kafka"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -60,17 +61,10 @@ type BetRepository interface {
 	// SKIP LOCKED), чтобы конкурентные воркеры не забрали одни и те же события.
 	// Блокировка удерживается до фиксации tx, поэтому MarkOutboxEventSent
 	// для выбранных событий должен вызываться в этой же транзакции.
-	GetPendingOutboxEvents(ctx context.Context, tx pgx.Tx, limit int) ([]OutboxEvent, error)
+	GetPendingOutboxEvents(ctx context.Context, tx pgx.Tx, limit int) ([]sharedKafka.OutboxEvent, error)
 	// MarkOutboxEventSent помечает outbox-событие как отправленное в рамках
 	// переданной транзакции.
 	MarkOutboxEventSent(ctx context.Context, tx pgx.Tx, id int64) error
-}
-
-// OutboxEvent — событие паттерна transactional outbox, ожидающее публикации.
-type OutboxEvent struct {
-	ID        int64
-	EventType string
-	Payload   []byte
 }
 
 // betRepository — реализация BetRepository поверх пула соединений pgx.
@@ -234,7 +228,7 @@ func (b *betRepository) GetPendingOutboxEvents(
 	ctx context.Context,
 	tx pgx.Tx,
 	limit int,
-) ([]OutboxEvent, error) {
+) ([]sharedKafka.OutboxEvent, error) {
 	rows, err := tx.Query(ctx, `
 	SELECT id, event_type, payload
 	FROM outbox
@@ -249,10 +243,10 @@ func (b *betRepository) GetPendingOutboxEvents(
 
 	defer rows.Close()
 
-	events := make([]OutboxEvent, 0, limit)
+	events := make([]sharedKafka.OutboxEvent, 0, limit)
 
 	for rows.Next() {
-		var event OutboxEvent
+		var event sharedKafka.OutboxEvent
 
 		err := rows.Scan(&event.ID, &event.EventType, &event.Payload)
 		if err != nil {

@@ -84,6 +84,11 @@ type WalletService interface {
 	// HandleBetSettled обрабатывает событие bet.settled от bet-service:
 	// зачисляет выигрыш на баланс, если ставка выиграна.
 	HandleBetSettled(ctx context.Context, event events.BetSettled) error
+	// HandleUserRegistered обрабатывает событие user.registered от
+	// auth-service: создаёт кошелёк для нового пользователя. CreateWallet
+	// идемпотентен (get-or-create), так что повторная доставка этого
+	// события безопасна сама по себе — отдельный guard не нужен.
+	HandleUserRegistered(ctx context.Context, event events.UserRegistered) error
 }
 
 type walletService struct {
@@ -554,6 +559,22 @@ func (w *walletService) HandleBetSettled(
 	})
 	if err != nil {
 		return fmt.Errorf("credit winnings: %w", err)
+	}
+
+	return nil
+}
+
+func (w *walletService) HandleUserRegistered(
+	ctx context.Context,
+	event events.UserRegistered,
+) error {
+	w.logger.InfoContext(ctx, "user registered event received",
+		"user_id", event.UserID,
+		"email", event.Email,
+	)
+
+	if err := w.CreateWallet(ctx, CreateWalletRequest{UserID: event.UserID}); err != nil {
+		return fmt.Errorf("create wallet: %w", err)
 	}
 
 	return nil

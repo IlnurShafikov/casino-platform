@@ -4,10 +4,11 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
+    { "key": "auth_url", "value": "http://localhost:8083" },
     { "key": "wallet_url", "value": "http://localhost:8081" },
     { "key": "bet_url", "value": "http://localhost:8082" },
     { "key": "token", "value": "" },
-    { "key": "user_id", "value": "1" },
+    { "key": "user_id", "value": "" },
     { "key": "bet_id", "value": "" }
   ],
   "item": [
@@ -15,15 +16,16 @@
       "name": "Auth",
       "item": [
         {
-          "name": "Get token",
+          "name": "Register",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "const body = pm.response.json();",
-                  "pm.collectionVariables.set('token', body.token);"
+                  "pm.collectionVariables.set('token', body.token);",
+                  "pm.collectionVariables.set('user_id', body.user_id);"
                 ]
               }
             }
@@ -33,10 +35,37 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"user_id\": {{user_id}},\n  \"email\": \"test@example.com\"\n}"
+              "raw": "{\n  \"email\": \"{{$randomEmail}}\",\n  \"password\": \"supersecret123\"\n}"
             },
-            "url": "{{wallet_url}}/auth/token"
-          }
+            "url": "{{auth_url}}/auth/register"
+          },
+          "description": "Создаёт пользователя и сразу выдаёт JWT. По событию user.registered wallet-service автоматически создаст кошелёк — POST /wallets вызывать руками не нужно."
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('token', body.token);",
+                  "pm.collectionVariables.set('user_id', body.user_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"newplayer@example.com\",\n  \"password\": \"supersecret123\"\n}"
+            },
+            "url": "{{auth_url}}/auth/login"
+          },
+          "description": "Логин под уже существующим пользователем (например, зарегистрированным вручную с этим email) — обнови email/password под свои данные."
         }
       ]
     },
@@ -44,7 +73,25 @@
       "name": "Wallet",
       "item": [
         {
-          "name": "Create wallet",
+          "name": "Get balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{wallet_url}}/wallets/{{user_id}}/balance"
+          }
+        },
+        {
+          "name": "Create wallet (manual, обычно не нужен)",
           "event": [
             {
               "listen": "test",
@@ -63,25 +110,8 @@
             ],
             "body": { "mode": "raw", "raw": "{\n  \"user_id\": {{user_id}}\n}" },
             "url": "{{wallet_url}}/wallets"
-          }
-        },
-        {
-          "name": "Get balance",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
-            "url": "{{wallet_url}}/wallets/{{user_id}}/balance"
-          }
+          },
+          "description": "Кошелёк уже создаётся автоматически при регистрации через user.registered — этот запрос нужен только если тестируешь wallet-service в изоляции, без auth-service."
         },
         {
           "name": "Deposit",
@@ -129,9 +159,9 @@
               "mode": "raw",
               "raw": "{\n  \"amount\": 500,\n  \"reference_id\": \"manual\",\n  \"reference_type\": \"BET\"\n}"
             },
-            "url": "{{wallet_url}}/wallets/{{user_id}}/debit",
-            "description": "Прямой вызов HTTP-эндпоинта списания в обход bet-service/Kafka. В обычном флоу (Place bet) списание происходит автоматически через money.debited после bet.placed — этот запрос сюда не входит, он для точечной проверки wallet-service отдельно."
-          }
+            "url": "{{wallet_url}}/wallets/{{user_id}}/debit"
+          },
+          "description": "Прямой вызов HTTP-эндпоинта списания в обход bet-service/Kafka. В обычном флоу (Place bet) списание происходит автоматически через money.debited после bet.placed."
         }
       ]
     },
@@ -186,7 +216,7 @@
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
             "url": "{{bet_url}}/bets/{{bet_id}}"
           },
-          "description": "Ставка разыгрывается асинхронно через Kafka (bet.placed → money.debited/money.debit.failed → bet.settled), обычно за доли секунды. Если тест 'bet is settled' падает — либо consumer в wallet-service не запущен, либо не успел обработать, повтори запрос."
+          "description": "Ставка разыгрывается асинхронно через Kafka (bet.placed → money.debited/money.debit.failed → bet.settled), обычно за доли секунды. Если тест 'bet is settled' падает — повтори запрос."
         }
       ]
     }

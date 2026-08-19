@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/casino/bet-service/internal/repository"
+	sharedKafka "github.com/casino/shared/kafka"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -132,7 +133,7 @@ func (m *mockBetRepository) GetPendingOutboxEvents(
 	context.Context,
 	pgx.Tx,
 	int,
-) ([]repository.OutboxEvent, error) {
+) ([]sharedKafka.OutboxEvent, error) {
 	return nil, nil
 }
 

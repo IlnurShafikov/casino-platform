@@ -9,18 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/casino/bet-service/internal/config"
-	"github.com/casino/bet-service/internal/handler"
-	betKafka "github.com/casino/bet-service/internal/kafka"
-	"github.com/casino/bet-service/internal/repository"
-	"github.com/casino/bet-service/internal/service"
+	"github.com/casino/auth-service/internal/config"
+	"github.com/casino/auth-service/internal/handler"
+	"github.com/casino/auth-service/internal/repository"
+	"github.com/casino/auth-service/internal/service"
 	sharedKafka "github.com/casino/shared/kafka"
 	ourMiddleware "github.com/casino/shared/middleware"
 	"github.com/go-chi/chi"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-const consumerGroupID = "bet-service"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -29,7 +26,7 @@ func main() {
 
 	slog.SetDefault(logger)
 
-	logger.Info("starting bet service")
+	logger.Info("starting auth service")
 
 	cfg := config.Load()
 
@@ -39,6 +36,7 @@ func main() {
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
+
 	defer cancel()
 
 	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
@@ -53,29 +51,21 @@ func main() {
 
 	producer, err := sharedKafka.NewProducer(cfg.KafkaBrokers, logger)
 	if err != nil {
-		logger.Error("failed to connected to kafka producer", "error", err.Error())
+		logger.Error("failed to connect to kafka producer", "error", err.Error())
 		os.Exit(1)
 	}
 
 	defer producer.Close()
 
-	betRepo := repository.NewBetRepository(db)
-	betSvc := service.NewBetService(betRepo, producer, logger)
+	userRepo := repository.NewUserRepository(db)
+	authSvc := service.NewAuthService(userRepo, []byte(cfg.JWTSecret), logger)
 
-	consumer, err := betKafka.NewConsumer(cfg.KafkaBrokers, consumerGroupID, betSvc, logger)
-	if err != nil {
-		logger.Error("failed to connected to kafka consumer", "error", err.Error())
-		os.Exit(1)
-	}
-
-	defer consumer.Close()
-
-	poller := sharedKafka.NewOutboxPoller(betRepo, producer, logger)
+	poller := sharedKafka.NewOutboxPoller(userRepo, producer, logger)
 
 	go poller.Start(ctx)
-	go consumer.Start(ctx)
 
-	betHandler := handler.NewBetHandler(betSvc, logger)
+	authHandler := handler.NewAuthHandler(authSvc, logger)
+
 	r := chi.NewRouter()
 
 	r.Use(ourMiddleware.Recovery(logger))
@@ -88,13 +78,7 @@ func main() {
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	r.Group(func(r chi.Router) {
-		r.Use(ourMiddleware.JWT(ourMiddleware.JWTConfig{
-			SecretKey: []byte(cfg.JWTSecret),
-		}))
-
-		betHandler.RegisterRoutes(r)
-	})
+	authHandler.RegisterRoutes(r)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
@@ -108,7 +92,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		logger.Info("bet service started", "port", cfg.HTTPPort)
+		logger.Info("auth service started", "port", cfg.HTTPPort)
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", "error", err.Error())
@@ -119,8 +103,6 @@ func main() {
 	<-quit
 	logger.Info("shutting down server...")
 
-	// Останавливаем фоновые горутины (poller, consumer) до того, как
-	// начнём закрывать их зависимости через defer.
 	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(
