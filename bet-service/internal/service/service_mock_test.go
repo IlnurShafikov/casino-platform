@@ -144,3 +144,14 @@ func (m *mockBetRepository) MarkOutboxEventSent(
 ) error {
 	return nil
 }
+
+// mockGame — детерминированная игра для тестов: всегда возвращает
+// заранее заданный исход, вместо случайного результата SlotGame.Play.
+type mockGame struct {
+	won       bool
+	winAmount int64
+}
+
+func (g mockGame) Play(int64) (bool, int64) {
+	return g.won, g.winAmount
+}

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"time"
 
 	"github.com/casino/bet-service/internal/repository"
@@ -67,7 +66,9 @@ type BetService interface {
 type betService struct {
 	repo     repository.BetRepository
 	producer sharedKafka.Producer
-	logger   *slog.Logger
+	games    map[string]Game
+
+	logger *slog.Logger
 }
 
 // NewBetService создаёт BetService поверх переданных репозитория и
@@ -75,11 +76,13 @@ type betService struct {
 func NewBetService(
 	repo repository.BetRepository,
 	producer sharedKafka.Producer,
+	games map[string]Game,
 	logger *slog.Logger,
 ) BetService {
 	return &betService{
 		repo:     repo,
 		producer: producer,
+		games:    games,
 		logger:   logger,
 	}
 }
@@ -95,6 +98,10 @@ func (b *betService) PlaceBet(
 
 	if req.GameType == "" {
 		return nil, ErrGameTypeIsRequired
+	}
+
+	if _, ok := b.games[req.GameType]; !ok {
+		return nil, ErrUnknownGameType
 	}
 
 	if req.IdempotencyKey == "" {
@@ -241,7 +248,12 @@ func (b *betService) HandleMoneyDebited(
 	// Деньги списаны — теперь и только теперь разыгрываем исход. Раньше
 	// (пока деньги не списаны) выигрыш начислять нельзя: иначе игрок
 	// может выиграть за ставку, которая по факту не оплачена.
-	won, winAmount := simulateGame(event.Amount)
+	game, ok := b.games[bet.GameType]
+	if !ok {
+		return fmt.Errorf("unknown game type: %w", ErrUnknownGameType)
+	}
+
+	won, winAmount := game.Play(event.Amount)
 
 	finalStatus := repository.BetStatusLost
 	if won {
@@ -329,23 +341,4 @@ func (b *betService) HandleMoneyDebitFailed(
 	)
 
 	return nil
-}
-
-// simulateGame — заглушка игровой логики: разыгрывает случайный исход
-// по фиксированной таблице множителей. Из 9 исходов 5 — проигрыш (0),
-// остальные — выигрыш с множителем от 1x до 4x ставки. Настоящую игровую
-// механику (слоты, рулетка и т.д. со своим RTP) сюда предстоит подставить
-// позже — сигнатура рассчитана на замену этой функции без изменения
-// вызывающего кода.
-func simulateGame(amount int64) (bool, int64) {
-	multipliers := []int64{0, 1, 0, 2, 0, 3, 0, 4, 0}
-
-	idx := rand.Int63n(int64(len(multipliers) - 1))
-	winMulti := multipliers[idx]
-
-	if winMulti == 0 {
-		return false, 0
-	}
-
-	return true, amount * winMulti
 }

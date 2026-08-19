@@ -5,4 +5,5 @@ import "errors"
 var (
 	ErrAmountMustBePositive = errors.New("amount must be positive")
 	ErrGameTypeIsRequired   = errors.New("game_type is required")
+	ErrUnknownGameType      = errors.New("unknown game type")
 )

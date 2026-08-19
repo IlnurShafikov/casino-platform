@@ -23,7 +23,7 @@ func TestBetService_HandleMoneyDebited_SkipsAlreadySettledBet(t *testing.T) {
 		WinAmount: 1000,
 	})
 
-	svc := newTestBetService(repo)
+	svc := newTestBetService(repo, testGames())
 
 	err := svc.HandleMoneyDebited(context.Background(), events.MoneyDebited{
 		BetID:  "1",
@@ -51,7 +51,7 @@ func TestBetService_HandleMoneyDebited_BetNotFound(t *testing.T) {
 	t.Parallel()
 
 	repo := newMockBetRepository()
-	svc := newTestBetService(repo)
+	svc := newTestBetService(repo, testGames())
 
 	err := svc.HandleMoneyDebited(context.Background(), events.MoneyDebited{
 		BetID:  "999",
@@ -64,12 +64,7 @@ func TestBetService_HandleMoneyDebited_BetNotFound(t *testing.T) {
 	}
 }
 
-// TestBetService_HandleMoneyDebited_SettlesPendingBet не проверяет
-// конкретно выигрыш/проигрыш — simulateGame использует math/rand
-// напрямую и не детерминирован снаружи. Проверяются только инварианты,
-// которые обязаны выполняться при любом исходе: ставка ушла из PENDING,
-// опубликовано ровно одно bet.settled, WinAmount согласован со статусом.
-func TestBetService_HandleMoneyDebited_SettlesPendingBet(t *testing.T) {
+func TestBetService_HandleMoneyDebited_SettlesPendingBet_Won(t *testing.T) {
 	t.Parallel()
 
 	repo := newMockBetRepository()
@@ -81,7 +76,11 @@ func TestBetService_HandleMoneyDebited_SettlesPendingBet(t *testing.T) {
 		Status:   repository.BetStatusPending,
 	})
 
-	svc := newTestBetService(repo)
+	games := map[string]service.Game{
+		service.GameTypeSlot: mockGame{won: true, winAmount: 2000},
+	}
+
+	svc := newTestBetService(repo, games)
 
 	err := svc.HandleMoneyDebited(context.Background(), events.MoneyDebited{
 		BetID:  "1",
@@ -94,24 +93,58 @@ func TestBetService_HandleMoneyDebited_SettlesPendingBet(t *testing.T) {
 
 	bet := repo.bets[1]
 
-	if bet.Status != repository.BetStatusWon && bet.Status != repository.BetStatusLost {
-		t.Fatalf("Status = %q, want WON or LOST", bet.Status)
+	if bet.Status != repository.BetStatusWon {
+		t.Errorf("Status = %q, want %q", bet.Status, repository.BetStatusWon)
 	}
 
-	if bet.Status == repository.BetStatusWon && bet.WinAmount <= 0 {
-		t.Errorf("WON bet has WinAmount = %d, want > 0", bet.WinAmount)
+	if bet.WinAmount != 2000 {
+		t.Errorf("WinAmount = %d, want 2000", bet.WinAmount)
 	}
 
-	if bet.Status == repository.BetStatusLost && bet.WinAmount != 0 {
-		t.Errorf("LOST bet has WinAmount = %d, want 0", bet.WinAmount)
+	if len(repo.outboxEvents) != 1 || repo.outboxEvents[0].eventType != events.TopicBetSettled {
+		t.Fatalf("outbox events = %+v, want one bet.settled event", repo.outboxEvents)
+	}
+}
+
+func TestBetService_HandleMoneyDebited_SettlesPendingBet_Lost(t *testing.T) {
+	t.Parallel()
+
+	repo := newMockBetRepository()
+	repo.seedBet(&repository.Bet{
+		ID:       1,
+		UserID:   7,
+		Amount:   500,
+		GameType: service.GameTypeSlot,
+		Status:   repository.BetStatusPending,
+	})
+
+	games := map[string]service.Game{
+		service.GameTypeSlot: mockGame{won: false, winAmount: 0},
 	}
 
-	if len(repo.outboxEvents) != 1 {
-		t.Fatalf("outbox events = %d, want 1", len(repo.outboxEvents))
+	svc := newTestBetService(repo, games)
+
+	err := svc.HandleMoneyDebited(context.Background(), events.MoneyDebited{
+		BetID:  "1",
+		UserID: 7,
+		Amount: 500,
+	})
+	if err != nil {
+		t.Fatalf("HandleMoneyDebited() unexpected error: %v", err)
 	}
 
-	if repo.outboxEvents[0].eventType != events.TopicBetSettled {
-		t.Errorf("outbox event type = %q, want %q", repo.outboxEvents[0].eventType, events.TopicBetSettled)
+	bet := repo.bets[1]
+
+	if bet.Status != repository.BetStatusLost {
+		t.Errorf("Status = %q, want %q", bet.Status, repository.BetStatusLost)
+	}
+
+	if bet.WinAmount != 0 {
+		t.Errorf("WinAmount = %d, want 0", bet.WinAmount)
+	}
+
+	if len(repo.outboxEvents) != 1 || repo.outboxEvents[0].eventType != events.TopicBetSettled {
+		t.Fatalf("outbox events = %+v, want one bet.settled event", repo.outboxEvents)
 	}
 }
 
@@ -151,7 +184,7 @@ func TestBetService_HandleMoneyDebitFailed(t *testing.T) {
 			repo := newMockBetRepository()
 			repo.seedBet(tt.seed)
 
-			svc := newTestBetService(repo)
+			svc := newTestBetService(repo, testGames())
 
 			err := svc.HandleMoneyDebitFailed(context.Background(), events.MoneyDebitFailed{
 				BetID:  "1",
@@ -178,7 +211,7 @@ func TestBetService_HandleMoneyDebitFailed_BetNotFound(t *testing.T) {
 	t.Parallel()
 
 	repo := newMockBetRepository()
-	svc := newTestBetService(repo)
+	svc := newTestBetService(repo, testGames())
 
 	err := svc.HandleMoneyDebitFailed(context.Background(), events.MoneyDebitFailed{
 		BetID:  "999",
