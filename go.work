@@ -3,6 +3,7 @@ go 1.26.3
 use (
 	./auth-service
 	./bet-service
+	./game-service
 	./shared
 	./wallet-service
 )
