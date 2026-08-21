@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// StatusPending — статус ставки сразу после создания, до того как
+// bet-service асинхронно разыграет её исход через Kafka.
+const StatusPending = "PENDING"
+
 type Bet struct {
 	ID        int64     `json:"id"`
 	UserID    int64     `json:"user_id"`
