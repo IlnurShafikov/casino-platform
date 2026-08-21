@@ -4,9 +4,7 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "auth_url", "value": "http://localhost:8083" },
-    { "key": "wallet_url", "value": "http://localhost:8081" },
-    { "key": "bet_url", "value": "http://localhost:8082" },
+    { "key": "gateway_url", "value": "http://localhost:8080" },
     { "key": "token", "value": "" },
     { "key": "user_id", "value": "" },
     { "key": "bet_id", "value": "" }
@@ -37,9 +35,9 @@
               "mode": "raw",
               "raw": "{\n  \"email\": \"{{$randomEmail}}\",\n  \"password\": \"supersecret123\"\n}"
             },
-            "url": "{{auth_url}}/auth/register"
+            "url": "{{gateway_url}}/auth/register"
           },
-          "description": "Создаёт пользователя и сразу выдаёт JWT. По событию user.registered wallet-service автоматически создаст кошелёк — POST /wallets вызывать руками не нужно."
+          "description": "Создаёт пользователя и сразу выдаёт JWT. По событию user.registered wallet-service автоматически создаст кошелёк — POST /wallets вызывать руками не нужно. Через gateway этот путь ограничен более строгим rate limit'ом (3 req/s, burst 5) — если увидишь 503, просто подожди секунду."
         },
         {
           "name": "Login",
@@ -63,9 +61,69 @@
               "mode": "raw",
               "raw": "{\n  \"email\": \"newplayer@example.com\",\n  \"password\": \"supersecret123\"\n}"
             },
-            "url": "{{auth_url}}/auth/login"
+            "url": "{{gateway_url}}/auth/login"
           },
           "description": "Логин под уже существующим пользователем (например, зарегистрированным вручную с этим email) — обнови email/password под свои данные."
+        }
+      ]
+    },
+    {
+      "name": "Games (через game-service, рекомендуемый способ играть)",
+      "item": [
+        {
+          "name": "Play slot",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.id) { pm.collectionVariables.set('bet_id', body.id); }",
+                  "pm.test('result is already settled, not PENDING', () => pm.expect(body.status).to.not.eql('PENDING'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 200\n}"
+            },
+            "url": "{{gateway_url}}/games/slot/play"
+          },
+          "description": "Размещает ставку через bet-service и сам дожидается результата (поллингом, до 5с) — в ответе сразу WON/LOST/CANCELLED, без ручного похода за GET /bets/{id}. Это основной способ 'поиграть', эндпоинты в папке Bet ниже — низкоуровневые, для отладки самого bet-service."
+        },
+        {
+          "name": "Play unknown game type (ожидаем 400 от bet-service)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 400, relayed from bet-service', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 100\n}"
+            },
+            "url": "{{gateway_url}}/games/roulette-deluxe/play"
+          },
+          "description": "Проверка, что ошибка от bet-service (unknown game type, 400) долетает через game-service до клиента с тем же статусом и текстом, не сворачиваясь в общий 502."
         }
       ]
     },
@@ -87,7 +145,7 @@
           "request": {
             "method": "GET",
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
-            "url": "{{wallet_url}}/wallets/{{user_id}}/balance"
+            "url": "{{gateway_url}}/wallets/{{user_id}}/balance"
           }
         },
         {
@@ -109,9 +167,9 @@
               { "key": "Authorization", "value": "Bearer {{token}}" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"user_id\": {{user_id}}\n}" },
-            "url": "{{wallet_url}}/wallets"
+            "url": "{{gateway_url}}/wallets"
           },
-          "description": "Кошелёк уже создаётся автоматически при регистрации через user.registered — этот запрос нужен только если тестируешь wallet-service в изоляции, без auth-service."
+          "description": "Кошелёк уже создаётся автоматически при регистрации через user.registered — этот запрос нужен только если тестируешь wallet-service в изоляции."
         },
         {
           "name": "Deposit",
@@ -133,7 +191,7 @@
               { "key": "Idempotency-Key", "value": "{{$guid}}" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"amount\": 10000\n}" },
-            "url": "{{wallet_url}}/wallets/{{user_id}}/deposit"
+            "url": "{{gateway_url}}/wallets/{{user_id}}/deposit"
           }
         },
         {
@@ -159,14 +217,14 @@
               "mode": "raw",
               "raw": "{\n  \"amount\": 500,\n  \"reference_id\": \"manual\",\n  \"reference_type\": \"BET\"\n}"
             },
-            "url": "{{wallet_url}}/wallets/{{user_id}}/debit"
+            "url": "{{gateway_url}}/wallets/{{user_id}}/debit"
           },
-          "description": "Прямой вызов HTTP-эндпоинта списания в обход bet-service/Kafka. В обычном флоу (Place bet) списание происходит автоматически через money.debited после bet.placed."
+          "description": "Прямой вызов HTTP-эндпоинта списания в обход bet-service/Kafka. В обычном флоу списание происходит автоматически через money.debited после bet.placed."
         }
       ]
     },
     {
-      "name": "Bet",
+      "name": "Bet (низкоуровневые эндпоинты bet-service, для отладки)",
       "item": [
         {
           "name": "Place bet",
@@ -194,8 +252,9 @@
               "mode": "raw",
               "raw": "{\n  \"amount\": 500,\n  \"game_type\": \"slot\"\n}"
             },
-            "url": "{{bet_url}}/bets"
-          }
+            "url": "{{gateway_url}}/bets"
+          },
+          "description": "То же самое, что делает game-service внутри Play slot, только без ожидания результата — сразу видно PENDING. Полезно, если хочешь своими глазами проверить сам асинхронный флоу через Kafka, а не готовый синхронный ответ."
         },
         {
           "name": "Get bet (wait ~1s after Place bet)",
@@ -214,7 +273,7 @@
           "request": {
             "method": "GET",
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
-            "url": "{{bet_url}}/bets/{{bet_id}}"
+            "url": "{{gateway_url}}/bets/{{bet_id}}"
           },
           "description": "Ставка разыгрывается асинхронно через Kafka (bet.placed → money.debited/money.debit.failed → bet.settled), обычно за доли секунды. Если тест 'bet is settled' падает — повтори запрос."
         }

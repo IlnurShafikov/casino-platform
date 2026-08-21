@@ -63,5 +63,85 @@ services:
     depends_on:
       - kafka
 
+  wallet-service:
+    build:
+      context: .
+      dockerfile: wallet-service/Dockerfile
+    container_name: casino-wallet-service
+    ports:
+      - "8081:8081"
+    environment:
+      DATABASE_URL: postgres://casino:casino123@postgres:5432/casino_wallet
+      REDIS_URL: redis:6379
+      KAFKA_BROKERS: kafka:29092
+      JWT_SECRET: local-dev-secret-change-in-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  bet-service:
+    build:
+      context: .
+      dockerfile: bet-service/Dockerfile
+    container_name: casino-bet-service
+    ports:
+      - "8082:8082"
+    environment:
+      DATABASE_URL: postgres://casino:casino123@postgres:5432/casino_bet
+      KAFKA_BROKERS: kafka:29092
+      JWT_SECRET: local-dev-secret-change-in-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: casino-auth-service
+    ports:
+      - "8083:8083"
+    environment:
+      DATABASE_URL: postgres://casino:casino123@postgres:5432/casino_auth
+      KAFKA_BROKERS: kafka:29092
+      JWT_SECRET: local-dev-secret-change-in-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  game-service:
+    build:
+      context: .
+      dockerfile: game-service/Dockerfile
+    container_name: casino-game-service
+    ports:
+      - "8084:8084"
+    environment:
+      BET_SERVICE_URL: http://bet-service:8082
+      JWT_SECRET: local-dev-secret-change-in-production
+    depends_on:
+      - bet-service
+
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: casino-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - wallet-service
+      - bet-service
+      - game-service
+
 volumes:
   postgres_data:
