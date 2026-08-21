@@ -25,6 +25,18 @@ type Bet struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// UpstreamError оборачивает ошибочный HTTP-ответ от bet-service, сохраняя
+// исходный статус-код и сообщение — чтобы вызывающий мог вернуть игроку
+// тот же статус, а не свернуть всё до общего 502.
+type UpstreamError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("bet-service returned %d: %s", e.StatusCode, e.Message)
+}
+
 type PlaceBetRequest struct {
 	Amount   int64  `json:"amount"`
 	GameType string `json:"game_type"`
@@ -116,7 +128,7 @@ func (c *client) do(req *http.Request) (*Bet, error) {
 
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
 
-		return nil, fmt.Errorf("bet-service returned %d: %s", resp.StatusCode, errBody.Error)
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Message: errBody.Error}
 	}
 
 	var bet Bet
