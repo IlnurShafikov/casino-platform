@@ -105,6 +105,7 @@ var serviceErrorStatus = []struct {
 	{service.ErrAmountMustBePositive, http.StatusBadRequest, "amount must be positive"},
 	{service.ErrGameTypeIsRequired, http.StatusBadRequest, "game_type is required"},
 	{repository.ErrBetNotFound, http.StatusNotFound, "bet not found"},
+	{service.ErrUnknownGameType, http.StatusBadRequest, "unknown game type"},
 }
 
 // handleServiceError сопоставляет ошибку, вернувшуюся из BetService, с

@@ -12,10 +12,19 @@ import (
 	"github.com/casino/shared/events"
 )
 
-func newTestBetService(repo *mockBetRepository) service.BetService {
+func newTestBetService(repo *mockBetRepository, games map[string]service.Game) service.BetService {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	return service.NewBetService(repo, mockProducer{}, logger)
+	return service.NewBetService(repo, mockProducer{}, games, logger)
+}
+
+// testGames возвращает реестр игр для тестов, где сам исход Play()
+// неважен (например, валидация PlaceBet никогда не доходит до Play) —
+// нужно только чтобы GameTypeSlot был зарегистрирован.
+func testGames() map[string]service.Game {
+	return map[string]service.Game{
+		service.GameTypeSlot: mockGame{won: true, winAmount: 1000},
+	}
 }
 
 func TestBetService_PlaceBet_Validation(t *testing.T) {
@@ -41,13 +50,18 @@ func TestBetService_PlaceBet_Validation(t *testing.T) {
 			req:     service.PlaceBetRequest{UserID: 1, Amount: 100},
 			wantErr: service.ErrGameTypeIsRequired,
 		},
+		{
+			name:    "unknown game type",
+			req:     service.PlaceBetRequest{UserID: 1, Amount: 100, GameType: "banana"},
+			wantErr: service.ErrUnknownGameType,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := newTestBetService(newMockBetRepository())
+			svc := newTestBetService(newMockBetRepository(), testGames())
 
 			_, err := svc.PlaceBet(context.Background(), tt.req)
 
@@ -62,7 +76,7 @@ func TestBetService_PlaceBet_Success(t *testing.T) {
 	t.Parallel()
 
 	repo := newMockBetRepository()
-	svc := newTestBetService(repo)
+	svc := newTestBetService(repo, testGames())
 
 	req := service.PlaceBetRequest{
 		UserID:   1,
@@ -110,7 +124,7 @@ func TestBetService_PlaceBet_Idempotent(t *testing.T) {
 		IdempotencyKey: "dup-key",
 	})
 
-	svc := newTestBetService(repo)
+	svc := newTestBetService(repo, testGames())
 
 	got, err := svc.PlaceBet(context.Background(), service.PlaceBetRequest{
 		UserID:         1,

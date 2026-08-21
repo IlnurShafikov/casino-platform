@@ -60,7 +60,12 @@ func main() {
 	defer producer.Close()
 
 	betRepo := repository.NewBetRepository(db)
-	betSvc := service.NewBetService(betRepo, producer, logger)
+
+	games := map[string]service.Game{
+		service.GameTypeSlot: service.SlotGame{},
+	}
+
+	betSvc := service.NewBetService(betRepo, producer, games, logger)
 
 	consumer, err := betKafka.NewConsumer(cfg.KafkaBrokers, consumerGroupID, betSvc, logger)
 	if err != nil {
